@@ -18,7 +18,7 @@ from tkinter import ttk
 
 
 REPO = "DialingSpoon527/seedsow-lua-editor"
-USER_AGENT = "seedsow-save-pack-verifier/0.2"
+USER_AGENT = "seedsow-save-pack-verifier/0.3"
 ZIP_NAME = "Seedsow-Lua-Editor-Save.zip"
 MANIFEST_NAME = "Seedsow-Lua-Editor-Save.manifest.json"
 CHECKSUM_NAME = ZIP_NAME + ".sha256"
@@ -138,7 +138,7 @@ def validate_archive(zip_bytes: bytes, manifest: dict) -> tuple[int, int]:
     return installable, total_bytes
 
 
-def download_and_verify(output_dir: Path) -> tuple[Path, str, int, int]:
+def download_and_verify(output_dir: Path, *, prepare_jksv: bool = False) -> tuple[Path, str, int, int, Path | None]:
     release = latest_release()
     tag = release["tag_name"]
     zip_bytes = get_bytes(asset_url(release, ZIP_NAME))
@@ -165,7 +165,15 @@ def download_and_verify(output_dir: Path) -> tuple[Path, str, int, int]:
     zip_path.write_bytes(zip_bytes)
     (target_dir / MANIFEST_NAME).write_bytes(manifest_bytes)
     (target_dir / CHECKSUM_NAME).write_bytes(checksum_bytes)
-    return zip_path, tag, count, size
+    jksv_path = None
+    if prepare_jksv:
+        if ".nx_save_meta.bin" not in manifest.get("save_files", {}):
+            raise VerificationError("Le paquet ne contient pas les métadonnées requises par l’import JKSV.")
+        jksv_dir = target_dir / "JKSV" / "saves"
+        jksv_dir.mkdir(parents=True, exist_ok=True)
+        jksv_path = jksv_dir / f"Seedsow Lua Editor {tag}.zip"
+        jksv_path.write_bytes(zip_bytes)
+    return zip_path, tag, count, size, jksv_path
 
 
 class App(tk.Tk):
@@ -204,17 +212,37 @@ class App(tk.Tk):
         ttk.Label(
             warning,
             text=(
-                "Attention : le paquet disponible vise la démo US 1.0.0. La compatibilité de la "
-                "démo européenne de ta console reste à confirmer."
+                "Le paquet vise la démo US 1.0.0. Deux rapports communautaires indiquent qu’il "
+                "fonctionne aussi sur la démo UK/EU 1.0.0; ce projet ne l’a pas reproduit."
             ),
             wraplength=630,
             justify="left",
         ).pack(anchor="w", pady=(8, 0))
 
+        ttk.Label(
+            warning,
+            text=(
+                "Le parcours JKSV publié passe par une Switch 1 modifiée, puis par le transfert "
+                "de sauvegarde Nintendo. La préparation PC ne remplace pas ces étapes."
+            ),
+            wraplength=630,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
+
+        buttons = ttk.Frame(root)
+        buttons.pack(anchor="w")
         self.download_button = ttk.Button(
-            root, text="Télécharger et vérifier la dernière version", command=self._start
+            buttons,
+            text="Télécharger et vérifier",
+            command=lambda: self._start(prepare_jksv=False),
         )
-        self.download_button.pack(anchor="w")
+        self.download_button.pack(side="left")
+        self.jksv_button = ttk.Button(
+            buttons,
+            text="Préparer pour JKSV",
+            command=lambda: self._start(prepare_jksv=True),
+        )
+        self.jksv_button.pack(side="left", padx=(8, 0))
         self.status = ttk.Label(root, text="Prêt.", wraplength=660, justify="left")
         self.status.pack(anchor="w", pady=(14, 8))
 
@@ -226,16 +254,18 @@ class App(tk.Tk):
             wraplength=660,
         ).pack(anchor="w", pady=(10, 0))
 
-    def _start(self) -> None:
+    def _start(self, *, prepare_jksv: bool) -> None:
         self.download_button.configure(state="disabled")
-        self.status.configure(text="Téléchargement depuis GitHub et vérification des empreintes…")
-        thread = threading.Thread(target=self._worker, daemon=True)
+        self.jksv_button.configure(state="disabled")
+        action = "Préparation du dossier JKSV" if prepare_jksv else "Vérification du paquet"
+        self.status.configure(text=f"{action} : téléchargement depuis GitHub et vérification des empreintes…")
+        thread = threading.Thread(target=self._worker, args=(prepare_jksv,), daemon=True)
         thread.start()
         self.after(150, self._poll)
 
-    def _worker(self) -> None:
+    def _worker(self, prepare_jksv: bool) -> None:
         try:
-            result = download_and_verify(self.output_dir)
+            result = download_and_verify(self.output_dir, prepare_jksv=prepare_jksv)
             self.messages.put((True, result))
         except (VerificationError, OSError, KeyError, TypeError, ValueError) as error:
             self.messages.put((False, str(error)))
@@ -247,21 +277,37 @@ class App(tk.Tk):
             self.after(150, self._poll)
             return
         self.download_button.configure(state="normal")
+        self.jksv_button.configure(state="normal")
         if not success:
-            self.status.configure(text="Vérification échouée; aucun paquet certifié n’a été préparé.")
+            self.status.configure(text="Vérification ou préparation échouée; consulte le détail.")
             self._set_details(str(result))
             return
 
-        path, tag, count, size = result
-        self.status.configure(text="Paquet téléchargé et vérifié. Aucun fichier n’a été envoyé à la console.")
-        self._set_details(
-            f"Version : {tag}\n"
-            f"Fichiers de sauvegarde vérifiés : {count}\n"
-            f"Taille décompressée : {size:,} octets\n"
-            f"Paquet : {path}\n\n"
-            "Étape console : indisponible dans cette version pour une Switch 2 standard "
-            "sans SmileBASIC."
-        )
+        path, tag, count, size, jksv_path = result
+        if jksv_path:
+            self.status.configure(text="Paquet vérifié et dossier JKSV préparé. Rien n’a été envoyé à la console.")
+            details = (
+                f"Version : {tag}\n"
+                f"Fichiers de sauvegarde vérifiés : {count}\n"
+                f"Taille décompressée : {size:,} octets\n"
+                f"Archive vérifiée : {path}\n"
+                f"Archive à copier : {jksv_path}\n\n"
+                "Copie le dossier JKSV sur la carte SD d’une Switch 1 qui peut lancer JKSV. "
+                "Sauvegarde d’abord la partie actuelle, importe l’archive, puis utilise le "
+                "transfert de sauvegarde Nintendo vers la Switch 2 avec le même compte. "
+                "Cette préparation PC ne permet pas l’import direct sur une Switch 2 standard."
+            )
+        else:
+            self.status.configure(text="Paquet téléchargé et vérifié. Aucun fichier n’a été envoyé à la console.")
+            details = (
+                f"Version : {tag}\n"
+                f"Fichiers de sauvegarde vérifiés : {count}\n"
+                f"Taille décompressée : {size:,} octets\n"
+                f"Paquet : {path}\n\n"
+                "Étape console : indisponible dans cette version pour une Switch 2 standard "
+                "sans SmileBASIC."
+            )
+        self._set_details(details)
 
     def _set_details(self, value: str) -> None:
         self.details.configure(state="normal")
