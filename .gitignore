@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+downloads/
+runs/
+saves/
+savekit/
+.env
+.env.*
+*.zip
+*.sav
+*.save
+*.bin
+.DS_Store
+Thumbs.db
+
